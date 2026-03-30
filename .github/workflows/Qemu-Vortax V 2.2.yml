@@ -336,11 +336,39 @@ jobs:
             )
             DOWNLOADED=$(ls -t | head -n1)
             sudo mv "$DOWNLOADED" "$FILE_PATH"
-            
-          else
-            echo "Downloading system file via wget..."
-            sudo wget -q --user-agent="Mozilla/5.0" --trust-server-names --content-disposition -O "$FILE_PATH" "$SRC"
-          fi
+            else
+  echo "Downloading system file via wget with retry logic..."
+  max_retries=3
+  retry_count=0
+  while [ $retry_count -lt $max_retries ]; do
+    if sudo wget --timeout=60 --tries=2 -q --user-agent="Mozilla/5.0" --trust-server-names --content-disposition -O "$FILE_PATH" "$SRC"; then
+      echo "Download successful"
+      break
+    else
+      retry_count=$((retry_count+1))
+      echo "::warning::Download attempt $retry_count failed. Retrying in 10 seconds..."
+      sleep 10
+    fi
+  done
+  
+  if [ $retry_count -eq $max_retries ]; then
+    echo "::warning::Download failed after $max_retries attempts. Will create empty disk."
+  fi
+fi
+
+# Verify downloaded file and process it
+if [ -f "$FILE_PATH" ] && [ $(sudo stat -c%s "$FILE_PATH" 2>/dev/null || echo 0) -gt 1000 ]; then
+  # ... existing archive processing logic ...
+else
+  echo "::warning::Download did not complete successfully. Creating empty QCOW2 disk as fallback."
+  sudo qemu-img create -f qcow2 "$MNT_PATH/${VM}.qcow2" "${DISK}G"
+fi
+
+# Final verification - ensure disk exists
+if [ ! -f "$MNT_PATH/${VM}.qcow2" ]; then
+  echo "::warning::QCOW2 disk does not exist. Creating default disk..."
+  sudo qemu-img create -f qcow2 "$MNT_PATH/${VM}.qcow2" "${DISK}G"
+fi
 
           EXT=$(file -b --mime-type "$FILE_PATH")
           if [[ "$EXT" == *"iso"* && "$MODE" == "iso" ]]; then
@@ -411,7 +439,8 @@ jobs:
           echo "downloaded from gitlab new links"
 
           if [ ! -f "$DISK_PATH" ]; then
-            sudo qemu-img create -f qcow2 "$DISK_PATH" "${DISK}G" || true
+           echo "::error::Disk file not found at $DISK_PATH. Creating now..."
+            sudo qemu-img create -f qcow2 "$DISK_PATH" "${DISK}G"
           fi
 
           if [ "$BIOS_MODE" = "UEFI" ]; then
